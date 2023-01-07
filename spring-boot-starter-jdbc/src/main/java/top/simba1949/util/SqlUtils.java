@@ -1,10 +1,6 @@
 package top.simba1949.util;
 
-import com.alibaba.fastjson2.JSONArray;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.collections4.CollectionUtils;
-import org.apache.commons.lang3.StringUtils;
-import org.apache.commons.lang3.Validate;
 
 import javax.persistence.Column;
 import javax.persistence.Table;
@@ -20,33 +16,37 @@ import java.util.*;
 @Slf4j
 public class SqlUtils {
 
+    private static final Set<String> DEFAULT_IGNORE_COLUMN_SET = new HashSet<>();
+
+    static {
+        DEFAULT_IGNORE_COLUMN_SET.add("serialVersionUID");
+        DEFAULT_IGNORE_COLUMN_SET.add("id");
+    }
+
     /**
-     * 组装 INSERT SQL
+     * 组装 INSERT SQL （默认忽略 serialVersionUID 和 id 字段）
      * @param aClass
      * @return
      */
     public static String getInsertSql(Class<?> aClass){
-        return getInsertSql(aClass, Collections.emptySet());
+        return getInsertSql(aClass, DEFAULT_IGNORE_COLUMN_SET);
     }
 
     /**
      * 组装 INSERT SQL
      * <p>
-     *     SQL 示例：
+     *      SQL 示例：
      *     INSERT INTO asset_base_bill (bill_name, parent_id, parent_name) VALUES('入库单', 0, '入库单');
      * </p>
-     *
      * @param aClass
      * @param ignoreColumns
      * @return
      */
     public static String getInsertSql(Class<?> aClass, Set<String> ignoreColumns){
-        // 默认添加忽略序列化字段和id字段
-        if (CollectionUtils.isEmpty(ignoreColumns)){
+        Objects.requireNonNull(aClass, "组装 insert SQL 异常");
+        if (null == ignoreColumns){ // prevent NPE
             ignoreColumns = new HashSet<>();
         }
-        ignoreColumns.add("serialVersionUID");
-        ignoreColumns.add("id");
 
         // 获取表名
         String tableName = getTableName(aClass);
@@ -57,35 +57,22 @@ public class SqlUtils {
         StringBuilder valueBuilder = new StringBuilder();
         valueBuilder.append(") VALUES(");
 
-        Field[] declaredFields = aClass.getDeclaredFields();
-        int index = 0;
-        for (Field field : declaredFields) {
+        Field[] declaredFields = getAllFieldIncludeSuperExcludeIgnore(aClass, ignoreColumns);
+
+        for (int i = 0; i < declaredFields.length; i++) {
+            Field field = declaredFields[i];
             field.setAccessible(true);
 
-            String fieldName = field.getName();
-            if (CollectionUtils.isNotEmpty(ignoreColumns) && ignoreColumns.contains(fieldName)){
-                continue;
-            }
-
-            // 如果存在Column注解，并且 Column.name() 不为空，获取 Column.name() 为字段名称，获取不到默认为字段名称
-            String filedColumnName = fieldName;
-            if (field.isAnnotationPresent(Column.class) &&
-                    null != field.getAnnotation(Column.class) &&
-                    StringUtils.isNotBlank(field.getAnnotation(Column.class).name())){
-                filedColumnName = field.getAnnotation(Column.class).name();
-            }
+            String filedColumnName = getColumnName(field);
 
             sqlBuilder.append(filedColumnName);
             valueBuilder.append("?"); // ? 半角问号占位符
 
-            // 不是最后一个字段需要使用分割符
-            int lastRealColumnIndex = declaredFields.length - ignoreColumns.size() - 1;
-            if (index != lastRealColumnIndex){
+            // 不是最后一个字段时，需要使用分割符
+            if (i != declaredFields.length - 1){
                 sqlBuilder.append(", ");
                 valueBuilder.append(", ");
             }
-
-            index++;
         }
 
         valueBuilder.append(")");
@@ -94,35 +81,34 @@ public class SqlUtils {
         return sql;
     }
 
-
-    public static <T> Object[] getInsertVal(T data) {
-        return getInsertVal(data, Collections.emptySet());
-    }
     /**
-     * 获取对应的值
+     * 获取对象字段值，并根据字段顺序封装在数组中
+     * @param data
+     * @param <T>
+     * @return
+     */
+    public static <T> Object[] getInsertVal(T data) {
+        return getInsertVal(data, DEFAULT_IGNORE_COLUMN_SET);
+    }
+
+    /**
+     * 获取对象字段值，并根据字段顺序封装在数组中
      * @param data
      * @param ignoreColumns
      * @param <T>
      * @return
      */
     public static <T> Object[] getInsertVal(T data, Set<String> ignoreColumns) {
-        if (CollectionUtils.isEmpty(ignoreColumns)){
-            ignoreColumns = new HashSet<>();
+        if (null == ignoreColumns){
+            ignoreColumns = new HashSet<>(); // prevent NPE
         }
-        ignoreColumns.add("id");
-        ignoreColumns.add("serialVersionUID");
 
         Class<?> aClass = data.getClass();
-        Field[] declaredFields = aClass.getDeclaredFields();
+        Field[] declaredFields = getAllFieldIncludeSuperExcludeIgnore(aClass, ignoreColumns);
 
         List list = new ArrayList<>();
         for (Field field : declaredFields) {
             field.setAccessible(true);
-
-            String fieldName = field.getName();
-            if (ignoreColumns.contains(fieldName)){
-                continue;
-            }
 
             try {
                 list.add(field.get(data));
@@ -132,10 +118,9 @@ public class SqlUtils {
 
         }
 
-        log.info("获取的数据值为{}", JSONArray.toJSONString(list));
-
         return list.toArray();
     }
+
 
     /**
      * 预处理数据
@@ -145,7 +130,7 @@ public class SqlUtils {
      * @throws Exception
      */
     public static void preparedStatementDealWith(PreparedStatement preparedStatement, Class<?> aClass, List<?> dataList) throws Exception {
-        if (null == preparedStatement || null == aClass || CollectionUtils.isEmpty(dataList)){
+        if (null == preparedStatement || null == aClass || null == dataList || dataList.size() == 0){
             return;
         }
 
@@ -163,6 +148,67 @@ public class SqlUtils {
     // =============================================
     // ================ private ====================
     // =============================================
+
+    /**
+     * 获取表名
+     * @param aClass
+     * @return
+     */
+    private static String getTableName(Class<?> aClass){
+        // 判断 class 是否存在 @Table 注解，如果存在直接获取表名，如果不存在，默认Class类名
+        boolean annotationPresent = aClass.isAnnotationPresent(Table.class);
+        if (annotationPresent){
+            Table annotation = aClass.getAnnotation(Table.class);
+            return annotation.name();
+        }
+
+        return aClass.getSimpleName();
+    }
+
+    /**
+     * 获取字段名称
+     * @param field
+     * @return
+     */
+    private static String getColumnName(Field field){
+        // 如果存在Column注解，并且 Column.name() 不为空，获取 Column.name() 为字段名称
+        // 获取不到默认为字段名称
+        String filedColumnName = field.getName();
+
+        if (field.isAnnotationPresent(Column.class) &&
+                null != field.getAnnotation(Column.class) &&
+                0 != field.getAnnotation(Column.class).name().length()){
+            filedColumnName = field.getAnnotation(Column.class).name();
+        }
+
+        return filedColumnName;
+    }
+
+    /**
+     * 获取所有字段（包含父类所有字段）
+     * @param aClass
+     * @param ignoreColumns
+     * @return
+     */
+    private static Field[] getAllFieldIncludeSuperExcludeIgnore(Class<?> aClass, Set<String> ignoreColumns) {
+        List<Field> fieldList = new ArrayList<>();
+
+        while (null != aClass){
+            Field[] declaredFields = aClass.getDeclaredFields();
+            for (Field field : declaredFields) {
+                field.setAccessible(true);
+                String fieldName = field.getName();
+                if (null != ignoreColumns && ignoreColumns.contains(fieldName)){
+                    continue;
+                }
+                fieldList.add(field);
+            }
+
+            aClass = aClass.getSuperclass();
+        }
+
+        return fieldList.toArray(new Field[0]);
+    }
 
     /**
      * 设置值
@@ -183,15 +229,16 @@ public class SqlUtils {
         if (Date.class.equals(fieldType) &&
                 field.isAnnotationPresent(Column.class) &&
                 null != field.getAnnotation(Column.class) &&
-                StringUtils.isNotBlank(field.getAnnotation(Column.class).columnDefinition())){
+                0 != field.getAnnotation(Column.class).columnDefinition().length()){
 
-            // Column.columnDefinition() 存在值，值为数据库类型，如果设置其他等同于没有设置值
+            // Column.columnDefinition() 存在值，值为数据库类型，需要将对应的时间转换数据库对应类型时间
+            // 否则等同于直接使用字段时间，这样可能会存在时区问题
             String columnDefinition = field.getAnnotation(Column.class).columnDefinition();
 
-            if ("timestamp".equals(columnDefinition)){
+            if ("timestamp".equalsIgnoreCase(columnDefinition)){
                 // 时间戳设置 timestamp
                 preparedStatement.setTimestamp(i, getRealTimestampValOrNull(field, record));
-            }else if ("datetime".equals(columnDefinition)){
+            }else if ("datetime".equalsIgnoreCase(columnDefinition)){
                 // 日期设置 datetime
                 preparedStatement.setDate(i, getRealDateValOrNull(field, record));
             }else {
@@ -251,23 +298,5 @@ public class SqlUtils {
 
         Date val = (Date) field.get(record);
         return null == val ? null : new java.sql.Timestamp(val.getTime());
-    }
-
-    /**
-     * 获取表名
-     * @param aClass
-     * @return
-     */
-    private static String getTableName(Class<?> aClass){
-        Validate.notNull(aClass, "数据异常：无法获取表名");
-
-        // 判断 class 是否存在 @Table 注解，如果存在直接获取表名，如果不存在，默认Class类名
-        boolean annotationPresent = aClass.isAnnotationPresent(Table.class);
-        if (annotationPresent){
-            Table annotation = aClass.getAnnotation(Table.class);
-            return annotation.name();
-        }
-
-        return aClass.getSimpleName();
     }
 }

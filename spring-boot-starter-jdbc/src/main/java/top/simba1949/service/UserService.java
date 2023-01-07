@@ -4,14 +4,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import top.simba1949.domain.Permission;
 import top.simba1949.domain.Role;
 import top.simba1949.domain.User;
 import top.simba1949.util.SqlUtils;
 
-import javax.sql.DataSource;
-import java.sql.Connection;
-import java.sql.SQLException;
 import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -34,6 +32,12 @@ public class UserService {
         jdbcTemplate.batchUpdate(insertSql, Collections.singletonList(insertVal));
     }
 
+    /**
+     * 将事务交给 spring 管理
+     * @param permissions
+     * @param roles
+     */
+    @Transactional(rollbackFor = Throwable.class)
     public void batchInsert(List<Permission> permissions, List<Role> roles) {
         String insertSql4Permission = SqlUtils.getInsertSql(Permission.class);
         String insertSql4Role = SqlUtils.getInsertSql(Role.class);
@@ -46,29 +50,8 @@ public class UserService {
                 .map(SqlUtils::getInsertVal)
                 .collect(Collectors.toList());
 
-        Connection connection = null;
-        try {
-            DataSource dataSource = jdbcTemplate.getDataSource();
-            connection = dataSource.getConnection();
-            connection.setAutoCommit(false);
-
-            jdbcTemplate.batchUpdate(insertSql4Permission, permissionVals);
-            jdbcTemplate.batchUpdate(insertSql4Role, roleVals);
-
-            connection.commit();
-            connection.setAutoCommit(true);
-        }catch (Exception e){
-
-        }finally {
-            if (null != connection){
-                try {
-                    connection.close();
-                } catch (SQLException e) {
-                    log.info("关闭连接失败{}", e.getMessage(), e);
-                }
-            }
-        }
-
-
+        jdbcTemplate.batchUpdate(insertSql4Permission, permissionVals);
+        int i = 1/0;
+        jdbcTemplate.batchUpdate(insertSql4Role, roleVals);
     }
 }
